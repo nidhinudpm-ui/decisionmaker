@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hybrid AI Decision Support</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <div id="setup-view" class="view">
+            <h1>Create New Decision</h1>
+            
+            <div class="glass-card">
+                <div class="form-group">
+                    <label>Decision Goal</label>
+                    <input type="text" id="goal" placeholder="e.g. Choose the best car for city commute">
+                </div>
+            </div>
+
+            <div class="glass-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3>Weighted Criteria</h3>
+                    <button class="btn btn-outline" onclick="addCriterion()">+ Add Criterion</button>
+                </div>
+                <div id="criteria-list" class="item-list">
+                    <!-- Criteria rows -->
+                </div>
+            </div>
+
+            <div class="glass-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3>Options</h3>
+                    <button class="btn btn-outline" onclick="addOption()">+ Add Option</button>
+                </div>
+                <div id="options-list" class="item-list">
+                    <!-- Option rows -->
+                </div>
+            </div>
+
+            <button class="btn btn-primary" style="width: 100%; justify-content: center; padding: 1.25rem;" onclick="submitDecision()">
+                Initialize Decision Matrix
+            </button>
+        </div>
+
+        <div id="scoring-view" class="view" style="display: none;">
+            <h1>Enter Scores</h1>
+            <div id="scoring-container"></div>
+            <button class="btn btn-primary" style="width: 100%; justify-content: center;" onclick="calculateResults()">
+                Calculate Rankings
+            </button>
+        </div>
+
+        <div id="result-view" class="view" style="display: none;">
+            <h1>Decision Rankings</h1>
+            <div id="rankings-container"></div>
+            <button class="btn btn-outline" onclick="location.reload()">New Decision</button>
+        </div>
+    </div>
+
+    <script>
+        let decisionId = null;
+        let criteria = [];
+        let options = [];
+
+        function addCriterion() {
+            const id = Date.now();
+            const html = `
+                <div class="item-row" id="crit-${id}">
+                    <input type="text" placeholder="Criterion name" class="crit-name">
+                    <input type="number" placeholder="Weight" class="crit-weight" style="width: 100px;">
+                    <select class="crit-dir">
+                        <option value="higher_better">Higher Better</option>
+                        <option value="lower_better">Lower Better</option>
+                    </select>
+                    <button class="btn btn-outline" onclick="document.getElementById('crit-${id}').remove()">✕</button>
+                </div>
+            `;
+            document.getElementById('criteria-list').insertAdjacentHTML('beforeend', html);
+        }
+
+        function addOption() {
+            const id = Date.now();
+            const html = `
+                <div class="item-row" id="opt-${id}">
+                    <input type="text" placeholder="Option name" class="opt-name">
+                    <input type="file" class="opt-file" accept=".pdf">
+                    <button class="btn btn-outline" onclick="document.getElementById('opt-${id}').remove()">✕</button>
+                </div>
+            `;
+            document.getElementById('options-list').insertAdjacentHTML('beforeend', html);
+        }
+
+        async function submitDecision() {
+            const goal = document.getElementById('goal').value;
+            const criteriaInputs = document.querySelectorAll('#criteria-list .item-row');
+            const optionInputs = document.querySelectorAll('#options-list .item-row');
+
+            const payload = {
+                goal: goal,
+                criteria: Array.from(criteriaInputs).map(row => ({
+                    name: row.querySelector('.crit-name').value,
+                    weight: parseFloat(row.querySelector('.crit-weight').value),
+                    type: 'numeric',
+                    direction: row.querySelector('.crit-dir').value
+                })),
+                options: Array.from(optionInputs).map(row => row.querySelector('.opt-name').value)
+            };
+
+            const response = await fetch('/api/decisions', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+
+            const result = await response.json();
+            decisionId = result.decision_id;
+            
+            // Handle PDF Uploads
+            const formData = new FormData();
+            const optionElements = document.querySelectorAll('#options-list .item-row');
+            
+            // We need to fetch the IDs from the backend, but since we didn't return them in Stage 1,
+            // let's fetch the decision details to get the option IDs
+            const detailsResponse = await fetch(`/api/decisions/${decisionId}/results`);
+            const details = await detailsResponse.json();
+            
+            optionElements.forEach((row, index) => {
+                const fileInput = row.querySelector('.opt-file');
+                if (fileInput.files.length > 0) {
+                    const optId = details.rankings[index].option_id;
+                    formData.append(optId, fileInput.files[0]);
+                }
+            });
+
+            if (formData.entries().next().done === false) { // Check if any files were added
+                document.getElementById('setup-view').style.display = 'none';
+                document.getElementById('scoring-view').style.display = 'block';
+                document.getElementById('scoring-container').innerHTML = `
+                    <div class="glass-card">
+                        <p>Processing documents with AI... This may take a few seconds.</p>
+                        <div class="loader"></div>
+                    </div>
+                `;
+                
+                await fetch(`/api/decisions/${decisionId}/process-docs`, {
+                    method: 'POST',
+                    body: formData
+                });
+            }
+            
+            calculateResults();
+        }
+
+        async function calculateResults() {
+            const response = await fetch(`/api/decisions/${decisionId}/results`);
+            const data = await response.json();
+            
+            document.getElementById('scoring-view').style.display = 'none';
+            document.getElementById('result-view').style.display = 'block';
+            
+            let html = '';
+            data.rankings.forEach((rank, index) => {
+                let rationaleHtml = '';
+                for (const [crit, text] of Object.entries(rank.rationales)) {
+                    if (text) {
+                        rationaleHtml += `<li><strong>${crit}:</strong> ${text}</li>`;
+                    }
+                }
+
+                html += `
+                    <div class="glass-card ranking-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <div>
+                                <span class="badge">#${index + 1}</span>
+                                <h2 style="margin-top: 0.5rem;">${rank.name}</h2>
+                            </div>
+                            <div class="total-score">${rank.total_score}</div>
+                        </div>
+                        <div class="rationale-section">
+                            <h4>Decision Rationale</h4>
+                            <ul>${rationaleHtml || '<li>No documentation provided.</li>'}</ul>
+                        </div>
+                    </div>
+                `;
+            });
+            document.getElementById('rankings-container').innerHTML = html;
+        }
+
+        // Initialize with one row
+        addCriterion();
+        addOption();
+    </script>
+</body>
+</html>
