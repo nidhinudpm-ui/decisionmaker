@@ -134,22 +134,21 @@
                 }
             });
 
-            if (formData.entries().next().done === false) { // Check if any files were added
-                document.getElementById('setup-view').style.display = 'none';
-                document.getElementById('scoring-view').style.display = 'block';
-                document.getElementById('scoring-container').innerHTML = `
-                    <div class="glass-card">
-                        <p>Processing documents with AI... This may take a few seconds.</p>
-                        <div class="loader"></div>
-                    </div>
-                `;
-                
-                await fetch(`/api/decisions/${decisionId}/process-docs`, {
-                    method: 'POST',
-                    body: formData
-                });
-            }
+            // Trigger RAG / Knowledge Fetching
+            document.getElementById('setup-view').style.display = 'none';
+            document.getElementById('scoring-view').style.display = 'block';
+            document.getElementById('scoring-container').innerHTML = `
+                <div class="glass-card">
+                    <p>AI is analyzing documents and fetching specifications... This may take a minute.</p>
+                    <div class="loader"></div>
+                </div>
+            `;
             
+            await fetch(`/api/decisions/${decisionId}/process-docs`, {
+                method: 'POST',
+                body: formData
+            });
+
             calculateResults();
         }
 
@@ -157,10 +156,25 @@
             const response = await fetch(`/api/decisions/${decisionId}/results`);
             const data = await response.json();
             
+            // Fetch AI Summary
+            const summaryResponse = await fetch(`/api/decisions/${decisionId}/summary`);
+            const summaryData = await summaryResponse.json();
+            
             document.getElementById('scoring-view').style.display = 'none';
             document.getElementById('result-view').style.display = 'block';
             
-            let html = '';
+            let html = `
+                <div class="glass-card" style="border-left: 4px solid var(--primary); margin-bottom: 2rem;">
+                    <h3>AI Master Summary</h3>
+                    <div style="color: var(--text-dim); line-height: 1.6; margin-top: 1rem;">
+                        ${summaryData.summary.replace(/\n/g, '<br>')}
+                    </div>
+                </div>
+                <div id="rankings-container"></div>
+            `;
+            document.getElementById('rankings-container').outerHTML = html;
+            
+            let rankingsHtml = '';
             data.rankings.forEach((rank, index) => {
                 let rationaleHtml = '';
                 for (const [crit, text] of Object.entries(rank.rationales)) {
@@ -169,7 +183,7 @@
                     }
                 }
 
-                html += `
+                rankingsHtml += `
                     <div class="glass-card ranking-card">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                             <div>
@@ -180,12 +194,12 @@
                         </div>
                         <div class="rationale-section">
                             <h4>Decision Rationale</h4>
-                            <ul>${rationaleHtml || '<li>No documentation provided.</li>'}</ul>
+                            <ul>${rationaleHtml || '<li>AI fetched specifications.</li>'}</ul>
                         </div>
                     </div>
                 `;
             });
-            document.getElementById('rankings-container').innerHTML = html;
+            document.getElementById('rankings-container').innerHTML = rankingsHtml;
         }
 
         // Initialize with one row

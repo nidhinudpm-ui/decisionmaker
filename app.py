@@ -5,6 +5,8 @@ from models.schemas import db, Decision, Option, Criterion, CriterionScore
 from services.scoring_service import normalize_scores, calculate_weighted_totals
 from services.pdf_service import extract_text_from_pdf
 from services.ai_service import get_ai_scores
+from services.vector_service import VectorService
+from services.summary_service import generate_decision_summary
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__, static_folder='frontend')
@@ -79,48 +81,69 @@ def process_option_documents(decision_id):
     decision = Decision.query.get_or_404(decision_id)
     files = request.files # {option_id: file_placeholder}
     
+    vector_service = VectorService()
     results = []
-    for opt_id_str, file in files.items():
-        opt_id = int(opt_id_str)
-        option = Option.query.get(opt_id)
+    
+    # Get all options to see which need AI fetching (even if no file)
+    for option in decision.options:
+        file = files.get(str(option.id))
+        doc_context = None
         
         if file and file.filename:
             filename = secure_filename(file.filename)
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{decision_id}_{opt_id}_{filename}")
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{decision_id}_{option.id}_{filename}")
             file.save(file_path)
             
-            # Extract Text
+            # Extract Text & Index in Chroma
             text = extract_text_from_pdf(file_path)
             if text:
-                # LLM Scoring
-                criteria_list = [{"id": c.id, "name": c.name, "direction": c.direction} for c in decision.criteria]
-                scores = get_ai_scores(option.name, text, criteria_list)
+                collection_name = f"decision_{decision_id}_opt_{option.id}"
+                vector_service.add_document(text, {"option_id": option.id}, collection_name)
                 
-                if scores:
-                    extracted_scores = scores.get('scores', {})
-                    rationales = scores.get('rationales', {})
-                    
-                    for crit_id_str, raw_val in extracted_scores.items():
-                        crit_id = int(crit_id_str)
-                        rationale = rationales.get(crit_id_str, "")
-                        
-                        # Save/Update Score
-                        existing_score = CriterionScore.query.filter_by(option_id=opt_id, criterion_id=crit_id).first()
-                        if existing_score:
-                            existing_score.raw_value = float(raw_val)
-                            existing_score.evidence_text = rationale
-                        else:
-                            new_score = CriterionScore(
-                                option_id=opt_id, 
-                                criterion_id=crit_id, 
-                                raw_value=float(raw_val),
-                                evidence_text=rationale
-                            )
-                            db.session.add(new_score)
-                    results.append({"option": option.name, "status": "success"})
+                # RAG: Retrieve top context for each criterion
+                doc_context = ""
+                for crit in decision.criteria:
+                    relevant_chunks = vector_service.query(crit.name, collection_name, k=2)
+                    doc_context += f"\n--- Context for {crit.name} ---\n" + "\n".join(relevant_chunks)
+        
+        # LLM Scoring (using RAG context or General Knowledge)
+        criteria_list = [{"id": c.id, "name": c.name, "direction": c.direction} for c in decision.criteria]
+        scores = get_ai_scores(option.name, criteria_list, doc_context)
+        
+        if scores:
+            extracted_scores = scores.get('scores', {})
+            rationales = scores.get('rationales', {})
+            
+            for crit_id_str, raw_val in extracted_scores.items():
+                crit_id = int(crit_id_str)
+                rationale = rationales.get(crit_id_str, "")
+                
+                existing_score = CriterionScore.query.filter_by(option_id=option.id, criterion_id=crit_id).first()
+                if existing_score:
+                    existing_score.raw_value = float(raw_val)
+                    existing_score.evidence_text = rationale
+                else:
+                    new_score = CriterionScore(
+                        option_id=option.id, 
+                        criterion_id=crit_id, 
+                        raw_value=float(raw_val),
+                        evidence_text=rationale
+                    )
+                    db.session.add(new_score)
+            results.append({"option": option.name, "status": "success"})
     
     db.session.commit()
-    return jsonify({"message": "Documents processed and scores extracted", "results": results}), 200
+    return jsonify({"message": "RAG Processing Complete", "results": results}), 200
+
+@app.route('/api/decisions/<int:decision_id>/summary', methods=['GET'])
+def get_summary(decision_id):
+    decision = Decision.query.get_or_404(decision_id)
+    # This requires results to be calculated first
+    results_resp = get_results(decision_id)
+    rankings = results_resp.get_json()['rankings']
+    
+    summary = generate_decision_summary(decision.goal, rankings)
+    return jsonify({"summary": summary})
 
 @app.route('/api/decisions/<int:decision_id>/results', methods=['GET'])
 def get_results(decision_id):

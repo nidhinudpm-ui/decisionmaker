@@ -3,10 +3,10 @@ from flask import current_app
 import json
 import re
 
-def get_ai_scores(option_name, document_text, criteria_list):
+def get_ai_scores(option_name, criteria_list, doc_context=None):
     """
-    Uses Groq LLM to analyze document text and score an option against criteria.
-    criteria_list: List of dicts with {id, name, direction, weight}
+    Uses Groq LLM to analyze document text (if provided) or use internal knowledge
+    to score an option against criteria.
     """
     client = Groq(api_key=current_app.config['GROQ_API_KEY'])
     model = current_app.config['GROQ_MODEL_NAME']
@@ -14,16 +14,17 @@ def get_ai_scores(option_name, document_text, criteria_list):
     # Construct the prompt
     criteria_desc = "\n".join([f"- {c['name']} (ID: {c['id']}) - Direction: {c['direction']}" for c in criteria_list])
     
+    context_part = f"Document Context:\n{doc_context}\n" if doc_context else "No document provided. Use your internal general knowledge to estimate values for this well-known option."
+    
     prompt = f"""
-    Analyze the following document for the option "{option_name}".
-    Extract raw numerical values or estimates for each of the following criteria.
-    ALSO provide a short 1-sentence rationale/evidence for why you gave that score based on the text.
+    Analyze the following for the option "{option_name}".
+    Extract or estimate raw numerical values for each of the criteria below.
+    ALSO provide a short 1-sentence rationale/evidence for why you gave that score.
+    
+    {context_part}
     
     Criteria:
     {criteria_desc}
-    
-    Document Text:
-    {document_text[:8000]}
     
     Return the results EXACTLY as a JSON object with this structure:
     {{
@@ -32,7 +33,7 @@ def get_ai_scores(option_name, document_text, criteria_list):
             ...
         }},
         "rationales": {{
-            "CRITERION_ID": "Evidence found in text...",
+            "CRITERION_ID": "Detailed reason...",
             ...
         }}
     }}
@@ -44,7 +45,7 @@ def get_ai_scores(option_name, document_text, criteria_list):
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a precise data extraction assistant. You output valid JSON with 'scores' and 'rationales' keys."
+                    "content": "You are a precise data extraction and estimation assistant. You output valid JSON with 'scores' and 'rationales' keys."
                 },
                 {
                     "role": "user",
