@@ -1,0 +1,13 @@
+flask
+flask-sqlalchemy
+mysql-connector-python
+cryptography
+pydantic
+python-dotenv
+PyMuPDF
+pdfplumber
+langchain
+langchain-google-genai
+chromadb
+sentence-transformers
+groq
